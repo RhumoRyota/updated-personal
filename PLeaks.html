@@ -1,1 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My File Organizer - Videos Only</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav class="main-nav">
+        <ul class="nav-list">
+            <li><a href="solo.html">Solo</a></li>
+            <li><a href="PLeasks.html">PLeaks</a></li>
+        </ul>
+    </nav>
 
+    <div class="container">
+        <h1>My Personal Video Organizer</h1>
+
+        <div class="input-section">
+            <label for="fileInput" class="file-input-label">
+                Select Your Videos
+            </label>
+            <input type="file" id="fileInput" multiple accept="video/*" /> <p>Select video files from your computer.</p>
+            <div id="statusMessage" class="status-message"></div>
+        </div>
+
+        <div class="clear-button-section">
+            <button id="clearFiles">
+                Clear All Videos
+            </button>
+        </div>
+
+        <div class="file-categories">
+            <div id="videos-section" class="category-section videos-category">
+                <h2>
+                    Videos
+                </h2>
+                <div id="videoContainer">
+                    </div>
+                <p id="noVideos" class="no-files-message">No videos selected yet.</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="fullscreenModal" class="fullscreen-modal">
+        <button id="closeModal" class="fullscreen-close-button">&times;</button>
+        <div class="fullscreen-content">
+            </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const videoContainer = document.getElementById('videoContainer');
+        const clearFilesButton = document.getElementById('clearFiles');
+        const statusMessageDiv = document.getElementById('statusMessage');
+
+        const noVideosMessage = document.getElementById('noVideos');
+
+        // Modal elements
+        const fullscreenModal = document.getElementById('fullscreenModal');
+        const closeModalButton = document.getElementById('closeModal');
+        const fullscreenContent = document.querySelector('#fullscreenModal .fullscreen-content');
+
+        let db; // Variable to hold the IndexedDB database instance
+        const DB_NAME = 'FileOrganizerDB';
+        const DB_VERSION = 1;
+        const STORE_NAMES = {
+            videos: 'videos' // Only videos store now
+        };
+
+        // Function to update visibility of "No files selected" messages
+        function updateNoFilesMessages() {
+            noVideosMessage.style.display = videoContainer.children.length === 0 ? 'block' : 'none';
+        }
+
+        // Function to display status messages
+        function showStatus(message, isError = false) {
+            statusMessageDiv.textContent = message;
+            statusMessageDiv.className = 'status-message' + (isError ? ' error' : '');
+        }
+
+        // Function to open and initialize IndexedDB
+        function openDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+                request.onupgradeneeded = (event) => {
+                    db = event.target.result;
+                    // Create object store for videos if it doesn't exist
+                    if (!db.objectStoreNames.contains(STORE_NAMES.videos)) {
+                        db.createObjectStore(STORE_NAMES.videos, { keyPath: 'name' });
+                    }
+                    // Delete old stores if they exist from previous versions
+                    if (db.objectStoreNames.contains('images')) {
+                        db.deleteObjectStore('images');
+                    }
+                    if (db.objectStoreNames.contains('others')) {
+                        db.deleteObjectStore('others');
+                    }
+                    showStatus('Database upgraded/created successfully.');
+                };
+
+                request.onsuccess = (event) => {
+                    db = event.target.result;
+                    showStatus('Database opened successfully.');
+                    resolve(db);
+                };
+
+                request.onerror = (event) => {
+                    console.error('IndexedDB error:', event.target.errorCode);
+                    showStatus('Error opening database: ' + event.target.error.message, true);
+                    reject(event.target.error);
+                };
+            });
+        }
+
+        // Function to add a file to IndexedDB
+        function addFileToDB(file) {
+            return new Promise((resolve, reject) => {
+                if (!db) {
+                    const errorMsg = 'Database not initialized.';
+                    showStatus(errorMsg, true);
+                    return reject(new Error(errorMsg));
+                }
+
+                if (!file.type.startsWith('video/')) {
+                    const errorMsg = `File "${file.name}" is not a video and will not be saved.`;
+                    showStatus(errorMsg, true);
+                    return resolve(); // Resolve as we don't want to save non-video files
+                }
+
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                    const fileData = {
+                        name: file.name,
+                        type: file.type,
+                        data: event.target.result // ArrayBuffer
+                    };
+
+                    try {
+                        const transaction = db.transaction([STORE_NAMES.videos], 'readwrite');
+                        const store = transaction.objectStore(STORE_NAMES.videos);
+
+                        const request = store.put(fileData); // Use put to overwrite if name exists
+                        request.onsuccess = () => {
+                            console.log(`Video "${file.name}" saved to IndexedDB.`);
+                            showStatus(`Video "${file.name}" saved.`);
+                            resolve();
+                        };
+                        request.onerror = (e) => {
+                            console.error(`Error saving video "${file.name}":`, e.target.error);
+                            showStatus(`Error saving video "${file.name}": ${e.target.error.message}`, true);
+                            reject(e.target.error);
+                        };
+                    } catch (e) {
+                        console.error('Transaction error:', e);
+                        showStatus('Error creating database transaction: ' + e.message, true);
+                        reject(e);
+                    }
+                };
+                reader.onerror = (e) => {
+                    console.error('FileReader error:', e);
+                    showStatus('Error reading file: ' + e.message, true);
+                    reject(e);
+                };
+                reader.readAsArrayBuffer(file); // Read file as ArrayBuffer for IndexedDB storage
+            });
+        }
+
+        // Function to load all files from IndexedDB and display them
+        async function loadFilesFromDB() {
+            if (!db) {
+                showStatus('Database not initialized. Attempting to open...', true);
+                try {
+                    await openDB(); // Try to open DB if not already open
+                } catch (e) {
+                    showStatus('Failed to load files: Database not available.', true);
+                    return;
+                }
+            }
+
+            // Clear existing UI elements before reloading
+            videoContainer.innerHTML = '';
+            showStatus('Loading videos from storage...');
+
+            try {
+                const transaction = db.transaction([STORE_NAMES.videos], 'readonly');
+                const videoStore = transaction.objectStore(STORE_NAMES.videos);
+
+                const videoRequest = videoStore.getAll();
+                videoRequest.onsuccess = (event) => {
+                    event.target.result.forEach(fileData => displayFile(fileData));
+                    updateNoFilesMessages();
+                };
+                videoRequest.onerror = (e) => console.error('Error loading videos:', e.target.error);
+
+                transaction.oncomplete = () => {
+                    showStatus('Videos loaded successfully.');
+                };
+                transaction.onerror = (e) => {
+                    console.error('Transaction error during load:', e);
+                    showStatus('Error loading videos: ' + e.target.error.message, true);
+                };
+
+            } catch (e) {
+                console.error('Error during file loading transaction setup:', e);
+                showStatus('Error preparing to load files: ' + e.message, true);
+            }
+        }
+
+        // Function to display a file (from new selection or loaded from DB)
+        function displayFile(fileData) {
+            const blob = new Blob([fileData.data], { type: fileData.type });
+            const fileUrl = URL.createObjectURL(blob);
+            const fileName = fileData.name;
+            const fileType = fileData.type;
+
+            if (fileType.startsWith('video/')) {
+                const videoWrapper = document.createElement('div');
+                videoWrapper.className = 'video-wrapper';
+
+                const video = document.createElement('video');
+                video.src = fileUrl;
+                video.controls = true;
+                video.preload = 'metadata';
+
+                videoWrapper.appendChild(video);
+                videoContainer.appendChild(videoWrapper);
+
+                // Add click listener for fullscreen
+                videoWrapper.addEventListener('click', () => {
+                    fullscreenContent.innerHTML = ''; // Clear previous content
+                    const fullVideo = document.createElement('video');
+                    fullVideo.src = fileUrl;
+                    fullVideo.controls = true;
+                    fullVideo.autoplay = true; // Autoplay when opened
+                    fullscreenContent.appendChild(fullVideo);
+                    fullscreenModal.classList.add('active');
+                });
+            }
+            // No other file types are displayed
+        }
+
+        // Event listener for file input change
+        fileInput.addEventListener('change', async (event) => {
+            const files = event.target.files;
+
+            if (files.length === 0) {
+                return;
+            }
+
+            showStatus(`Adding ${files.length} video(s)...`);
+            const addPromises = Array.from(files).map(file => addFileToDB(file));
+
+            try {
+                await Promise.all(addPromises);
+                // After all files are added, reload all files to ensure display is consistent with DB
+                loadFilesFromDB();
+            } catch (error) {
+                console.error('Error adding one or more files:', error);
+                showStatus('Failed to add some videos. Check console for details.', true);
+            }
+        });
+
+        // Event listener for clear files button
+        clearFilesButton.addEventListener('click', async () => {
+            if (!db) {
+                showStatus('Database not initialized.', true);
+                return;
+            }
+
+            showStatus('Clearing all videos...');
+            try {
+                const transaction = db.transaction([STORE_NAMES.videos], 'readwrite');
+                const videoStore = transaction.objectStore(STORE_NAMES.videos);
+
+                videoStore.clear();
+
+                transaction.oncomplete = () => {
+                    // Revoke all object URLs to free up memory
+                    videoContainer.querySelectorAll('video').forEach(video => URL.revokeObjectURL(video.src));
+
+                    // Clear all containers in the UI
+                    videoContainer.innerHTML = '';
+
+                    // Reset file input
+                    fileInput.value = '';
+
+                    updateNoFilesMessages();
+                    showStatus('All videos cleared from storage and display.');
+                };
+                transaction.onerror = (e) => {
+                    console.error('Error clearing stores:', e.target.error);
+                    showStatus('Error clearing videos: ' + e.target.error.message, true);
+                };
+            } catch (e) {
+                console.error('Transaction error during clear:', e);
+                showStatus('Error preparing to clear videos: ' + e.message, true);
+            }
+        });
+
+        // Event listeners for the fullscreen modal
+        closeModalButton.addEventListener('click', () => {
+            fullscreenModal.classList.remove('active');
+            // Pause video when closing modal
+            const videoElement = fullscreenContent.querySelector('video');
+            if (videoElement) {
+                videoElement.pause();
+            }
+            fullscreenContent.innerHTML = ''; // Clear content after closing
+        });
+
+        fullscreenModal.addEventListener('click', (event) => {
+            // Close modal if clicked on the background (not the content itself)
+            if (event.target === fullscreenModal) {
+                fullscreenModal.classList.remove('active');
+                const videoElement = fullscreenContent.querySelector('video');
+                if (videoElement) {
+                    videoElement.pause();
+                }
+                fullscreenContent.innerHTML = '';
+            }
+        });
+
+
+        // Initialize IndexedDB and load existing files when the page loads
+        window.onload = async () => {
+            try {
+                await openDB();
+                loadFilesFromDB();
+            } catch (e) {
+                console.error('Failed to initialize app:', e);
+                showStatus('Failed to initialize video organizer. Check console for details.', true);
+            }
+        };
+    </script>
+</body>
+</html>
